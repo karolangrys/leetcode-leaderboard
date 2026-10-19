@@ -1,0 +1,120 @@
+name: Build and Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.event.repository.name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=branch
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Verify VPS has required files
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: TARGET_PATH
+          script: |
+            set -eu
+            TARGET_PATH="${{ secrets.VPS_TARGET_PATH }}"
+
+            if [ ! -d "$TARGET_PATH" ]; then
+              echo "Directory $TARGET_PATH does not exist on the VPS." >&2
+              exit 1
+            fi
+
+            if [ ! -f "$TARGET_PATH/compose.yaml" ]; then
+              echo "Missing compose.yaml on the VPS." >&2
+              exit 1
+            fi
+
+            if [ ! -f "$TARGET_PATH/.env" ]; then
+              echo "Missing .env on the VPS." >&2
+              exit 1
+            fi
+
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          TARGET_PATH: ${{ secrets.VPS_TARGET_PATH }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: IMAGE_OWNER,IMAGE_NAME,IMAGE_TAG,TARGET_PATH
+          script: |
+            set -eu
+            export IMAGE_OWNER="$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')"
+            export IMAGE_NAME
+            export IMAGE_TAG
+
+            cd "$TARGET_PATH"
+
+            mkdir -p data
+            chown -R 1001:1001 data 2>/dev/null || echo "Warning: could not chown data/"
+
+            docker compose pull tracker
+            docker compose up -d --build
+            docker compose exec -T tracker npx drizzle-kit push
+            docker image prune -f

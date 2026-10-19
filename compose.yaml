@@ -1,0 +1,24 @@
+name: leetcode-squad-tracker
+
+services:
+  tracker:
+    image: ghcr.io/${IMAGE_OWNER:-user}/${IMAGE_NAME:-leetcode-squad-tracker}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DATABASE_URL=file:/app/data/db.sqlite
+      - CRON_SECRET=${CRON_SECRET}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - LEETCODE_API_URL=http://leetcode-api:3000
+    depends_on:
+      leetcode-api:
+        condition: service_started
+
+  leetcode-api:
+    build: https://github.com/alfaarghya/alfa-leetcode-api.git
+    restart: unless-stopped
+    expose:
+      - "3000"
