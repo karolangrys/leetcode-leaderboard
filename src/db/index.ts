@@ -1,6 +1,8 @@
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
+import { sql } from "drizzle-orm";
 import * as schema from "./schema";
+import { INITIAL_BADGES, TOP_INTERVIEW_150 } from "./seed-data";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -83,6 +85,37 @@ export async function ensureDbInitialized() {
 
       INSERT OR IGNORE INTO system_state (id, last_synced_at) VALUES (1, NULL);
     `);
+
+    // Auto-seed initial badges and Top Interview 150 problems on first boot if DB is empty
+    const [probCountRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.problems);
+
+    if (Number(probCountRow?.count ?? 0) === 0) {
+      for (const badge of INITIAL_BADGES) {
+        await db
+          .insert(schema.badges)
+          .values(badge)
+          .onConflictDoNothing();
+      }
+
+      const chunkSize = 50;
+      for (let i = 0; i < TOP_INTERVIEW_150.length; i += chunkSize) {
+        const chunk = TOP_INTERVIEW_150.slice(i, i + chunkSize);
+        await db
+          .insert(schema.problems)
+          .values(
+            chunk.map((p) => ({
+              id: p.id,
+              title: p.title,
+              titleSlug: p.titleSlug,
+              difficulty: p.difficulty,
+            }))
+          )
+          .onConflictDoNothing();
+      }
+    }
+
     initialized = true;
   } catch (err) {
     console.error("Failed to initialize database tables:", err);

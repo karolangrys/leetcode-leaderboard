@@ -5,7 +5,7 @@ services:
     image: ghcr.io/${IMAGE_OWNER:-user}/${IMAGE_NAME:-leetcode-squad-tracker}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - '12349:3000'
     volumes:
       - ./data:/app/data
     environment:
@@ -21,4 +21,4 @@ services:
     build: https://github.com/alfaarghya/alfa-leetcode-api.git
     restart: unless-stopped
     expose:
-      - "3000"
+      - '3000'

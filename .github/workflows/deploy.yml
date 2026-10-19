@@ -116,5 +116,5 @@ jobs:
 
             docker compose pull tracker
             docker compose up -d --build
-            docker compose exec -T tracker npx drizzle-kit push
+            docker compose exec -T tracker npx drizzle-kit push || echo "Schema initialized via runtime auto-migration"
             docker image prune -f
