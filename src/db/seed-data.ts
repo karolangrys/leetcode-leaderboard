@@ -11,7 +11,7 @@ export const INITIAL_BADGES = [
     code: "PERFECTIONIST",
     name: "Perfekcjonista",
     description:
-      "Rozwiąż komplet 3 dziennych zadań (Easy, Medium i Hard) jednego dnia.",
+      "Rozwiąż komplet obu dziennych zadań (Easy oraz Medium/Hard) jednego dnia.",
     icon: "💎",
   },
   {

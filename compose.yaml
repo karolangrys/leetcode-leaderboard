@@ -2,6 +2,7 @@ name: leetcode-squad-tracker
 
 services:
   tracker:
+    container_name: leetsquad-tracker
     image: ghcr.io/${IMAGE_OWNER:-user}/${IMAGE_NAME:-leetcode-squad-tracker}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
@@ -18,6 +19,7 @@ services:
         condition: service_started
 
   leetcode-api:
+    container_name: leetsquad-leetcode-api
     build: https://github.com/alfaarghya/alfa-leetcode-api.git
     restart: unless-stopped
     expose:

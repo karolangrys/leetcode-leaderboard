@@ -140,7 +140,7 @@ export function DailyChallenges({
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
           {sorted.map((challenge) => {
             const style =
               difficultyStyles[challenge.slotDifficulty] ??

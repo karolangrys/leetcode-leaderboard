@@ -13,12 +13,16 @@ import {
   getTodayUtcDateString,
   getYesterdayUtcDateString,
 } from "@/lib/utils";
+import { logger } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get("authorization");
 
+  logger.info("Received POST /api/cron/daily request");
+
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    logger.warn("Unauthorized POST /api/cron/daily attempt");
     return NextResponse.json(
       { error: "Unauthorized: Invalid or missing CRON_SECRET" },
       { status: 401 }
@@ -31,6 +35,11 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     const yesterdayUtc = getYesterdayUtcDateString(now);
     const todayUtc = getTodayUtcDateString(now);
+
+    logger.info("Executing daily cron job steps", {
+      yesterdayUtc,
+      todayUtc,
+    });
 
     // 1. Failsafe Sync for yesterday (for late submissions before midnight UTC)
     const failsafeSync = await syncSolutionsForDate(yesterdayUtc);
@@ -52,6 +61,15 @@ export async function POST(request: NextRequest) {
 
     revalidatePath("/");
 
+    logger.info("Daily cron job completed successfully", {
+      yesterdayUtc,
+      todayUtc,
+      newSolutionsYesterday: failsafeSync.newSolutionsCount,
+      streakEvaluation,
+      badgesAwardedCount: badgeAwarded.length,
+      dailyDrawCount: dailyDraw.drawn.length,
+    });
+
     return NextResponse.json({
       ok: true,
       executedAt: now.toISOString(),
@@ -65,7 +83,9 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    console.error("Daily cron job failed:", err);
+    logger.error("Daily cron job failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return NextResponse.json(
       {
         ok: false,

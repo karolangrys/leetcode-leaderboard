@@ -21,12 +21,14 @@ import {
   evaluateBadgesForDate,
 } from "@/lib/sync-engine";
 import { getTodayUtcDateString } from "@/lib/utils";
+import { logger } from "@/lib/logger";
 
 async function requireAdminAuth() {
   const cookieStore = await cookies();
   const token = cookieStore.get(ADMIN_COOKIE_NAME)?.value;
   const valid = await verifyAdminToken(token);
   if (!valid) {
+    logger.warn("Unauthorized admin action attempt");
     throw new Error("Brak uprawnień administratora.");
   }
 }
@@ -37,6 +39,7 @@ export async function loginAdmin(
   const expectedPassword = process.env.ADMIN_PASSWORD || "admin123";
 
   if (!password || password !== expectedPassword) {
+    logger.warn("Failed admin login attempt (invalid password)");
     return {
       success: false,
       error: "Nieprawidłowe hasło administratora.",
@@ -53,12 +56,14 @@ export async function loginAdmin(
     maxAge: 60 * 60 * 24 * 7, // 7 days
   });
 
+  logger.info("Admin logged in successfully");
   return { success: true };
 }
 
 export async function logoutAdmin(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete(ADMIN_COOKIE_NAME);
+  logger.info("Admin logged out");
 }
 
 export async function addUserAction(input: {
@@ -87,11 +92,17 @@ export async function addUserAction(input: {
       longestStreak: 0,
     });
 
+    logger.info("Admin added new user", { username, displayName });
     revalidatePath("/");
     revalidatePath("/admin");
     return { success: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Błąd podczas dodawania użytkownika.";
+    const msg =
+      err instanceof Error ? err.message : "Błąd podczas dodawania użytkownika.";
+    logger.error("Failed to add user", {
+      username: input.username,
+      error: msg,
+    });
     if (msg.includes("UNIQUE")) {
       return {
         success: false,
@@ -109,18 +120,21 @@ export async function deleteUserAction(
     await requireAdminAuth();
     await ensureDbInitialized();
 
-    // Cascading delete (explicit + FK cascade)
     await db.delete(solutions).where(eq(solutions.userId, userId));
     await db.delete(user_badges).where(eq(user_badges.userId, userId));
     await db.delete(users).where(eq(users.id, userId));
 
+    logger.info("Admin deleted user and cascaded records", { userId });
     revalidatePath("/");
     revalidatePath("/admin");
     return { success: true };
   } catch (err) {
+    const msg =
+      err instanceof Error ? err.message : "Nie udało się usunąć użytkownika.";
+    logger.error("Failed to delete user", { userId, error: msg });
     return {
       success: false,
-      error: err instanceof Error ? err.message : "Nie udało się usunąć użytkownika.",
+      error: msg,
     };
   }
 }
@@ -153,6 +167,7 @@ export async function saveBadgeAction(input: {
         .update(badges)
         .set({ code, name, description, icon })
         .where(eq(badges.id, input.id));
+      logger.info("Admin updated badge", { id: input.id, code, name });
     } else {
       await db.insert(badges).values({
         code,
@@ -160,16 +175,18 @@ export async function saveBadgeAction(input: {
         description,
         icon,
       });
+      logger.info("Admin created badge", { code, name });
     }
 
-    // Re-evaluate badges for today in case someone already qualifies
     await evaluateBadgesForDate(getTodayUtcDateString());
 
     revalidatePath("/");
     revalidatePath("/admin");
     return { success: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Błąd podczas zapisu odznaki.";
+    const msg =
+      err instanceof Error ? err.message : "Błąd podczas zapisu odznaki.";
+    logger.error("Failed to save badge", { code: input.code, error: msg });
     if (msg.includes("UNIQUE")) {
       return {
         success: false,
@@ -190,13 +207,17 @@ export async function deleteBadgeAction(
     await db.delete(user_badges).where(eq(user_badges.badgeId, badgeId));
     await db.delete(badges).where(eq(badges.id, badgeId));
 
+    logger.info("Admin deleted badge", { badgeId });
     revalidatePath("/");
     revalidatePath("/admin");
     return { success: true };
   } catch (err) {
+    const msg =
+      err instanceof Error ? err.message : "Nie udało się usunąć odznaki.";
+    logger.error("Failed to delete badge", { badgeId, error: msg });
     return {
       success: false,
-      error: err instanceof Error ? err.message : "Nie udało się usunąć odznaki.",
+      error: msg,
     };
   }
 }
@@ -209,6 +230,7 @@ export async function triggerManualDailyDrawAction(): Promise<{
   try {
     await requireAdminAuth();
     const todayUtc = getTodayUtcDateString();
+    logger.info("Admin triggered manual daily draw", { todayUtc });
     const res = await drawDailyChallengesForDate(todayUtc);
     revalidatePath("/");
     revalidatePath("/admin");
@@ -230,9 +252,11 @@ export async function triggerManualDailyDrawAction(): Promise<{
       message: `Wylosowano ${res.drawn.length} nowe wyzwania na dzień ${todayUtc}!`,
     };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : "Błąd losowania zadań.";
+    logger.error("Failed manual daily draw", { error: msg });
     return {
       success: false,
-      error: err instanceof Error ? err.message : "Błąd losowania zadań.",
+      error: msg,
     };
   }
 }
@@ -270,12 +294,20 @@ export async function addProblemAction(input: {
       difficulty,
     });
 
+    logger.info("Admin added new problem to pool", {
+      id,
+      title,
+      titleSlug,
+      difficulty,
+    });
+
     revalidatePath("/");
     revalidatePath("/admin");
     return { success: true };
   } catch (err) {
     const msg =
       err instanceof Error ? err.message : "Błąd podczas dodawania zadania.";
+    logger.error("Failed to add problem", { id: input.id, error: msg });
     if (msg.includes("UNIQUE")) {
       return {
         success: false,

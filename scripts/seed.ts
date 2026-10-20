@@ -95,7 +95,7 @@ async function main() {
     `✅ Seeded ${problemItems.length} problems from Top Interview 150 (Easy: ${easyCount}, Medium: ${mediumCount}, Hard: ${hardCount}).`
   );
 
-  // 4. Ensure today's 3 daily challenges are drawn from Top Interview 150
+  // 4. Ensure today's 2 daily challenges (Easy + Medium/Hard) are drawn from Top Interview 150
   const todayUtc = getTodayUtcDateString();
   const drawResult = await drawDailyChallengesForDate(todayUtc);
   if (drawResult.alreadyExists) {
@@ -104,7 +104,7 @@ async function main() {
     );
   } else {
     console.log(
-      `🎲 Drawn 3 daily challenges for ${todayUtc}:`,
+      `🎲 Drawn ${drawResult.drawn.length} daily challenges for ${todayUtc}:`,
       drawResult.drawn
         .map((d) => `[${d.difficulty}] #${d.problemId} ${d.title}`)
         .join(", ")

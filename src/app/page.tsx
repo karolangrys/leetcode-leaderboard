@@ -193,7 +193,7 @@ export default async function HomePage() {
                 </span>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Codzienny trening algorytmów • 3 zadania dziennie • Ciągły ranking
+                Codzienny trening algorytmów • 2 zadania dziennie (Easy + Medium/Hard) • Ciągły ranking
               </p>
             </div>
           </div>

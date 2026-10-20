@@ -13,6 +13,7 @@ import {
   fetchSubmissionDetails,
 } from "@/lib/leetcode";
 import { getDifficultyPoints } from "@/lib/utils";
+import { logger } from "@/lib/logger";
 
 export interface SyncResultSummary {
   date: string;
@@ -45,6 +46,8 @@ export async function syncSolutionsForDate(
     errors: [],
   };
 
+  logger.info("Starting syncSolutionsForDate", { dateStr });
+
   // 1. Fetch daily challenges for dateStr with problem metadata
   const challengesWithProblems = await db
     .select({
@@ -61,14 +64,26 @@ export async function syncSolutionsForDate(
     .where(eq(daily_challenges.date, dateStr));
 
   if (challengesWithProblems.length === 0) {
+    logger.warn("No daily challenges found for date", { dateStr });
     return summary;
   }
+
+  logger.info("Loaded daily challenges for sync", {
+    dateStr,
+    challenges: challengesWithProblems.map((c) => ({
+      challengeId: c.challengeId,
+      problemId: c.problemId,
+      titleSlug: c.titleSlug,
+      difficulty: c.slotDifficulty,
+    })),
+  });
 
   const challengeIds = challengesWithProblems.map((c) => c.challengeId);
 
   // 2. Fetch all users and existing solutions for these challenges
   const allUsers = await db.select().from(users);
   if (allUsers.length === 0) {
+    logger.info("No users in database to sync", { dateStr });
     return summary;
   }
 
@@ -81,10 +96,10 @@ export async function syncSolutionsForDate(
     existingSolutions.map((s) => `${s.userId}:${s.challengeId}`)
   );
 
-  // Start of dateStr in UTC (unix seconds) - allow a 12-hour grace buffer before UTC midnight for timezone flexibility
+  // Start of dateStr in UTC (unix seconds) - allow a 14-hour grace buffer before UTC midnight for timezone flexibility
   const dayStartTimestampSec =
     Math.floor(new Date(`${dateStr}T00:00:00.000Z`).getTime() / 1000) -
-    12 * 3600;
+    14 * 3600;
 
   // 3. For each user missing at least one challenge from dateStr, query the LeetCode API
   for (const user of allUsers) {
@@ -93,24 +108,71 @@ export async function syncSolutionsForDate(
     );
 
     if (missingChallenges.length === 0) {
+      logger.info("User already solved all challenges for date", {
+        username: user.username,
+        dateStr,
+      });
       continue;
     }
 
     summary.checkedUsers += 1;
 
+    logger.info("Checking missing challenges for user", {
+      username: user.username,
+      missingSlugs: missingChallenges.map((c) => c.titleSlug),
+      dayStartUtc: new Date(dayStartTimestampSec * 1000).toISOString(),
+    });
+
     try {
       const acSubmissions = await fetchUserAcSubmissions(user.username, 25);
 
       for (const challenge of missingChallenges) {
-        // Find matching Accepted submission for this problem
-        const matchingSub = acSubmissions.find((sub) => {
-          if (sub.titleSlug !== challenge.titleSlug) return false;
+        const slugMatches = acSubmissions.filter(
+          (sub) =>
+            sub.titleSlug.toLowerCase() === challenge.titleSlug.toLowerCase()
+        );
+
+        if (slugMatches.length === 0) {
+          logger.info("No AC submission found for challenge slug", {
+            username: user.username,
+            challengeSlug: challenge.titleSlug,
+          });
+          continue;
+        }
+
+        // Check if any matching submission is within the day window
+        const matchingSub = slugMatches.find((sub) => {
           const subTs = Number(sub.timestamp);
           if (!Number.isFinite(subTs) || subTs <= 0) return true;
           return subTs >= dayStartTimestampSec;
         });
 
-        if (!matchingSub) continue;
+        if (!matchingSub) {
+          const latestSubTs = Number(slugMatches[0].timestamp);
+          logger.warn(
+            "Found AC submission for challenge slug, but timestamp is older than challenge day window",
+            {
+              username: user.username,
+              challengeSlug: challenge.titleSlug,
+              submissionTimestamp: slugMatches[0].timestamp,
+              submissionDateUtc: Number.isFinite(latestSubTs)
+                ? new Date(latestSubTs * 1000).toISOString()
+                : "unknown",
+              requiredAfterUtc: new Date(
+                dayStartTimestampSec * 1000
+              ).toISOString(),
+            }
+          );
+          continue;
+        }
+
+        logger.info("Matched AC submission for daily challenge!", {
+          username: user.username,
+          challengeSlug: challenge.titleSlug,
+          submissionId: matchingSub.id || null,
+          lang: matchingSub.lang || null,
+          timestamp: matchingSub.timestamp,
+        });
 
         // Fetch submission code & language from GET /submission/{submissionId}
         const details = await fetchSubmissionDetails(
@@ -151,13 +213,31 @@ export async function syncSolutionsForDate(
           difficulty: challenge.slotDifficulty,
           pointsAdded: points,
         });
+
+        logger.info("Saved new solution and updated user score", {
+          username: user.username,
+          problemTitle: challenge.title,
+          difficulty: challenge.slotDifficulty,
+          pointsAdded: points,
+        });
       }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Unknown API error";
+      logger.error("Error syncing user submissions", {
+        username: user.username,
+        error: message,
+      });
       summary.errors.push(`${user.username}: ${message}`);
     }
   }
+
+  logger.info("Finished syncSolutionsForDate", {
+    dateStr,
+    checkedUsers: summary.checkedUsers,
+    newSolutionsCount: summary.newSolutionsCount,
+    errorsCount: summary.errors.length,
+  });
 
   return summary;
 }
@@ -172,6 +252,7 @@ export async function evaluateStreaksForDate(dateStr: string): Promise<{
   reset: number;
 }> {
   await ensureDbInitialized();
+  logger.info("Evaluating streaks for date", { dateStr });
 
   const dayChallenges = await db
     .select({ id: daily_challenges.id })
@@ -180,6 +261,11 @@ export async function evaluateStreaksForDate(dateStr: string): Promise<{
 
   const allUsers = await db.select().from(users);
   if (allUsers.length === 0 || dayChallenges.length === 0) {
+    logger.info("Skipping streak evaluation (no users or challenges)", {
+      dateStr,
+      usersCount: allUsers.length,
+      challengesCount: dayChallenges.length,
+    });
     return { incremented: 0, reset: 0 };
   }
 
@@ -217,6 +303,7 @@ export async function evaluateStreaksForDate(dateStr: string): Promise<{
     }
   }
 
+  logger.info("Completed streak evaluation", { dateStr, incremented, reset });
   return { incremented, reset };
 }
 
@@ -228,6 +315,7 @@ export async function evaluateBadgesForDate(
   dateStr: string
 ): Promise<Array<{ userId: string; badgeCode: string }>> {
   await ensureDbInitialized();
+  logger.info("Evaluating badges for date", { dateStr });
 
   const allBadges = await db.select().from(badges);
   const allUsers = await db.select().from(users);
@@ -284,11 +372,13 @@ export async function evaluateBadgesForDate(
           break;
         }
         case "PERFECTIONIST": {
-          // Solved all 3 daily challenges on dateStr (or any single day in history)
           const solvedChallengeIdsOnDay = new Set(
             userDaySolutions.map((s) => s.challengeId)
           );
-          if (dayChallenges.length >= 3 && solvedChallengeIdsOnDay.size >= 3) {
+          if (
+            dayChallenges.length >= 2 &&
+            solvedChallengeIdsOnDay.size >= dayChallenges.length
+          ) {
             qualifies = true;
           } else {
             const byDate = new Map<string, Set<number>>();
@@ -298,7 +388,7 @@ export async function evaluateBadgesForDate(
               byDate.set(s.date, set);
             }
             for (const set of byDate.values()) {
-              if (set.size >= 3) {
+              if (set.size >= 2) {
                 qualifies = true;
                 break;
               }
@@ -307,7 +397,6 @@ export async function evaluateBadgesForDate(
           break;
         }
         case "EARLY_BIRD": {
-          // Solved a problem between 04:00 and 08:00 UTC
           qualifies = userAllSolutions.some((s) => {
             const hour = new Date(s.solvedAt).getUTCHours();
             return hour >= 4 && hour < 8;
@@ -315,7 +404,6 @@ export async function evaluateBadgesForDate(
           break;
         }
         case "NIGHT_OWL": {
-          // Solved a problem between 22:00 and 03:59 UTC
           qualifies = userAllSolutions.some((s) => {
             const hour = new Date(s.solvedAt).getUTCHours();
             return hour >= 22 || hour < 4;
@@ -352,7 +440,6 @@ export async function evaluateBadgesForDate(
           break;
         }
         default: {
-          // Custom admin-created badges can match score milestones like SCORE_50
           if (badge.code.startsWith("SCORE_")) {
             const target = Number(badge.code.replace("SCORE_", ""));
             if (Number.isFinite(target) && target > 0) {
@@ -371,6 +458,10 @@ export async function evaluateBadgesForDate(
         });
         ownedSet.add(`${user.id}:${badge.id}`);
         awarded.push({ userId: user.id, badgeCode: badge.code });
+        logger.info("Awarded badge to user", {
+          username: user.username,
+          badgeCode: badge.code,
+        });
       }
     }
   }
@@ -379,15 +470,10 @@ export async function evaluateBadgesForDate(
 }
 
 /**
- * Draws 3 unique problems for `dateStr` (YYYY-MM-DD),
- * excluding all problemIds ever used in `daily_challenges`.
- *
- * Strategy (Option 2 - Full Top Interview 150 coverage):
- * 1. Tries to pick 1 unused Easy, 1 unused Medium, 1 unused Hard.
- * 2. When a difficulty pool runs out (e.g. Hard after 18 days or Easy after 40 days),
- *    substitutes the slot with an unused Medium problem (or any remaining unused problem),
- *    so all 150 problems are completed across 50 days without any repeats.
- * 3. Only after all 150 problems have been exhausted does it start a new cycle.
+ * Draws 2 unique problems for `dateStr` (YYYY-MM-DD):
+ * - Slot 1: Easy (fallback to Medium/Hard when Easy pool is exhausted)
+ * - Slot 2: Medium or Hard (fallback to any unused problem if exhausted)
+ * Excludes all problemIds ever used in `daily_challenges`.
  */
 export async function drawDailyChallengesForDate(dateStr: string): Promise<{
   alreadyExists: boolean;
@@ -406,7 +492,7 @@ export async function drawDailyChallengesForDate(dateStr: string): Promise<{
     .innerJoin(problems, eq(daily_challenges.problemId, problems.id))
     .where(eq(daily_challenges.date, dateStr));
 
-  if (existingForDate.length >= 3) {
+  if (existingForDate.length >= 2) {
     return {
       alreadyExists: true,
       drawn: existingForDate.map((e) => ({
@@ -425,40 +511,42 @@ export async function drawDailyChallengesForDate(dateStr: string): Promise<{
   const allProblems = await db.select().from(problems);
 
   if (allProblems.length === 0) {
+    logger.warn("Cannot draw daily challenges: problems table is empty", {
+      dateStr,
+    });
     return { alreadyExists: false, drawn: [] };
   }
 
-  const preferredTargets: Array<"Easy" | "Medium" | "Hard"> = [
-    "Easy",
-    "Medium",
-    "Hard",
+  const preferredSlots: Array<"EASY" | "MEDIUM_OR_HARD"> = [
+    "EASY",
+    "MEDIUM_OR_HARD",
   ];
-  const slotsNeeded = 3 - existingForDate.length;
-  const targetsToFill = preferredTargets.slice(3 - slotsNeeded);
+  const slotsNeeded = 2 - existingForDate.length;
+  const slotsToFill = preferredSlots.slice(2 - slotsNeeded);
 
   const drawn: Array<{ difficulty: string; problemId: number; title: string }> =
     [];
 
-  for (const targetDiff of targetsToFill) {
-    // 1. Primary choice: unused problem of target difficulty
-    let pool = allProblems.filter(
-      (p) => p.difficulty === targetDiff && !usedIds.has(p.id)
-    );
+  for (const slotType of slotsToFill) {
+    let pool =
+      slotType === "EASY"
+        ? allProblems.filter(
+            (p) => p.difficulty === "Easy" && !usedIds.has(p.id)
+          )
+        : allProblems.filter(
+            (p) =>
+              (p.difficulty === "Medium" || p.difficulty === "Hard") &&
+              !usedIds.has(p.id)
+          );
 
-    // 2. Option 2 fallback: if target difficulty is exhausted, pick an unused Medium problem
-    if (pool.length === 0) {
-      pool = allProblems.filter(
-        (p) => p.difficulty === "Medium" && !usedIds.has(p.id)
-      );
-    }
-
-    // 3. Any remaining unused problem in database
+    // Fallback: if preferred difficulty pool is exhausted, pick any remaining unused problem
     if (pool.length === 0) {
       pool = allProblems.filter((p) => !usedIds.has(p.id));
     }
 
-    // 4. If all problems in the database have been used, stop and draw nothing
+    // If all problems in the database have been used, stop and draw nothing
     if (pool.length === 0) {
+      logger.warn("All problems in pool have been exhausted!", { dateStr });
       break;
     }
 
@@ -478,6 +566,12 @@ export async function drawDailyChallengesForDate(dateStr: string): Promise<{
       title: chosen.title,
     });
   }
+
+  logger.info("Drawn daily challenges for date", {
+    dateStr,
+    drawnCount: drawn.length,
+    drawn,
+  });
 
   return {
     alreadyExists: false,
